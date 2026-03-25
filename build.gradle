@@ -33,6 +33,15 @@ test {
     useJUnitPlatform()
 }
 
+// Railway should run the Spring Boot fat jar (bootJar), not the plain jar.
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'app.jar'
+}
+
 def developerAppPort = findProperty('developer.app.port') ?: '8080'
 def developerNgrokUrl  = findProperty('developer.ngrok.url') ?: 'https://staphylomatic-slimily-vivien.ngrok-free.dev'
 
