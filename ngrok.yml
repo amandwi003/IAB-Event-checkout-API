@@ -1,0 +1,9 @@
+# Dev tunnel for this project. Your app must listen on the same port as `addr`.
+# Start:  ngrok start stripe-api --config ngrok.yml
+# Requires ~/.config/ngrok/ngrok.yml (or NGROK_AUTHTOKEN) for auth.
+version: "2"
+tunnels:
+  stripe-api:
+    proto: http
+    addr: 8080
+    hostname: staphylomatic-slimily-vivien.ngrok-free.dev

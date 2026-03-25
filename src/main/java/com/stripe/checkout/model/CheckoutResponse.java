@@ -19,9 +19,13 @@ public class CheckoutResponse {
     private String  cardLast4;
     private String  cardBrand;
 
+    /** Major units for Salesforce / reporting (e.g. "49.99" for USD). */
+    private String  orderAmount;
+
     public static CheckoutResponse ok(String customerId, String subscriptionId,
                                       String invoiceId, String paymentIntentId,
-                                      String paymentStatus, String cardLast4, String cardBrand) {
+                                      String paymentStatus, String cardLast4, String cardBrand,
+                                      String orderAmount) {
         CheckoutResponse r = new CheckoutResponse();
         r.success         = true;
         r.message         = "Payment processed successfully";
@@ -32,6 +36,7 @@ public class CheckoutResponse {
         r.paymentStatus   = paymentStatus;
         r.cardLast4       = cardLast4;
         r.cardBrand       = cardBrand;
+        r.orderAmount     = orderAmount;
         return r;
     }
 
@@ -53,4 +58,5 @@ public class CheckoutResponse {
     public String  getPaymentStatus()   { return paymentStatus; }
     public String  getCardLast4()       { return cardLast4; }
     public String  getCardBrand()       { return cardBrand; }
+    public String  getOrderAmount()     { return orderAmount; }
 }

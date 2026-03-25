@@ -1,12 +1,16 @@
 plugins {
-    id 'org.springframework.boot' version '2.7.18'
-    id 'io.spring.dependency-management' version '1.0.15.RELEASE'
+    id 'org.springframework.boot' version '3.4.5'
+    id 'io.spring.dependency-management' version '1.1.7'
     id 'java'
 }
 
 group = 'com.stripe.checkout'
 version = '1.0.0'
-sourceCompatibility = '11'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
 
 repositories {
     mavenCentral()
@@ -28,6 +32,16 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+def developerAppPort = findProperty('developer.app.port') ?: '8080'
+def developerNgrokUrl  = findProperty('developer.ngrok.url') ?: 'https://staphylomatic-slimily-vivien.ngrok-free.dev'
+
+tasks.register('tunnel', Exec) {
+    group = 'application'
+    description = 'Starts ngrok to developer.ngrok.url → localhost:' + developerAppPort + ' (stop other tunnels on that URL first).'
+    commandLine 'ngrok', 'http', developerAppPort, '--url', developerNgrokUrl
+}
+
 // ←  To avoid block 
 bootRun {
     jvmArgs = [

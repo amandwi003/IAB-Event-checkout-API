@@ -3,6 +3,7 @@ package com.stripe.checkout.controller;
 import com.stripe.checkout.config.StripeConfig;
 import com.stripe.checkout.model.CheckoutRequest;
 import com.stripe.checkout.model.CheckoutResponse;
+import com.stripe.checkout.service.SalesforceService;
 import com.stripe.checkout.service.StripeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,18 +12,19 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * Stripe Checkout REST Controller.
  *
- * All endpoints are PUBLIC — no authentication required.
- * This is intentional for the WordPress plugin demo.
- *
  * Endpoints:
- *   GET  /api/health          → confirm API is running
- *   GET  /api/config          → returns your publishable key for front-end use
- *   POST /api/checkout        → main checkout: create customer + subscription in Stripe
+ *   GET  /api/health                → confirm API is running
+ *   GET  /api/config                → return Stripe publishable key
+ *   POST /api/checkout              → direct card checkout (legacy)
+ *   POST /api/checkout/session      → hosted Stripe Checkout session (single event)
+ *   POST /api/checkout/cart-session → hosted Stripe Checkout session (multi-event cart)
+ *   GET  /api/checkout/session/{id} → retrieve session + payment intent after payment
  */
 @RestController
 @RequestMapping("/api")
@@ -36,15 +38,10 @@ public class CheckoutController {
     @Autowired
     private StripeConfig stripeConfig;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // GET /api/health
-    // ─────────────────────────────────────────────────────────────────────────
+    @Autowired
+    private SalesforceService salesforceService;
 
-    /**
-     * Health check — use this to confirm ngrok → Spring Boot is working.
-     *
-     * cURL: curl https://YOUR-NGROK-URL/api/health
-     */
+    // GET /api/health
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
         Map<String, String> response = new HashMap<>();
@@ -53,15 +50,7 @@ public class CheckoutController {
         return ResponseEntity.ok(response);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
     // GET /api/config
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Returns the Stripe publishable key for use in front-end / WordPress plugin.
-     *
-     * cURL: curl https://YOUR-NGROK-URL/api/config
-     */
     @GetMapping("/config")
     public ResponseEntity<Map<String, String>> config() {
         Map<String, String> response = new HashMap<>();
@@ -69,58 +58,37 @@ public class CheckoutController {
         return ResponseEntity.ok(response);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // POST /api/checkout
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Main checkout endpoint.
-     *
-     * Accepts JSON body. Creates a Stripe Customer + Subscription.
-     * Verifies the PaymentIntent succeeded and returns the result.
-     *
-     * Example cURL:
-     *
-     *   curl -X POST https://YOUR-NGROK-URL/api/checkout \
-     *     -H "Content-Type: application/json" \
-     *     -d '{
-     *           "firstName": "John",
-     *           "lastName": "Doe",
-     *           "email": "john@example.com",
-     *           "cardNumber": "4242424242424242",
-     *           "expireString": "12/34",
-     *           "cvc": "123",
-     *           "planId": "price_YOUR_PRICE_ID",
-     *           "country": "US",
-     *           "postalCode": "10001",
-     *           "eventId": "EVT-001",
-     *           "description": "Test Event Ticket"
-     *         }'
-     */
+    // POST /api/checkout  (direct card — legacy)
     @PostMapping("/checkout")
     public ResponseEntity<CheckoutResponse> checkout(@RequestBody CheckoutRequest request) {
-        log.info("Checkout request received for plan: {} | event: {}",
-                request.getPlanId(), request.getEventId());
+        log.info("Checkout request for plan: {} | event: {}", request.getPlanId(), request.getEventId());
 
-        // Basic validation
         if (request.getPlanId() == null || request.getPlanId().isBlank()) {
-            return ResponseEntity.badRequest()
-                    .body(CheckoutResponse.error("planId is required (Stripe Price ID)"));
+            return ResponseEntity.badRequest().body(CheckoutResponse.error("planId is required"));
         }
         if (request.getCardNumber() == null || request.getCvc() == null) {
-            return ResponseEntity.badRequest()
-                    .body(CheckoutResponse.error("cardNumber and cvc are required"));
+            return ResponseEntity.badRequest().body(CheckoutResponse.error("cardNumber and cvc are required"));
         }
         if (request.getExpMonth() == 0 && request.getExpireString() == null) {
-            return ResponseEntity.badRequest()
-                    .body(CheckoutResponse.error("Card expiry is required (expireString or expMonth+expYear)"));
+            return ResponseEntity.badRequest().body(CheckoutResponse.error("Card expiry is required"));
         }
 
         CheckoutResponse result = stripeService.processCheckout(request);
 
         if (result.isSuccess()) {
-            log.info("Checkout SUCCESS — customer: {} | subscription: {}",
-                    result.getCustomerId(), result.getSubscriptionId());
+            log.info("Checkout SUCCESS — customer: {}", result.getCustomerId());
+            String email = request.getEmail();
+            boolean isMember = email != null && !email.isBlank() && salesforceService.isMember(email);
+            String amount = result.getOrderAmount() != null ? result.getOrderAmount() : "0";
+            String eventTitle = request.getDescription() != null ? request.getDescription() : "Event Ticket";
+            salesforceService.syncOrderToSalesforce(
+                    nullToEmpty(request.getFirstName()),
+                    nullToEmpty(request.getLastName()),
+                    nullToEmpty(email),
+                    eventTitle,
+                    amount,
+                    result.getPaymentIntentId(),
+                    isMember);
             return ResponseEntity.ok(result);
         } else {
             log.warn("Checkout FAILED: {}", result.getMessage());
@@ -128,31 +96,29 @@ public class CheckoutController {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // POST /api/checkout/session  (Stripe-hosted Checkout)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Creates a Stripe-hosted Checkout Session.
-     *
-     * The WordPress plugin should:
-     *   1) POST JSON here (planId, quantity, email, optional successUrl/cancelUrl)
-     *   2) Receive { "sessionId": "...", "url": "https://checkout.stripe.com/..." }
-     *   3) Open the "url" in a new window/tab for the user to complete payment.
-     */
+    // POST /api/checkout/session  (Stripe-hosted — single event)
     @PostMapping("/checkout/session")
     public ResponseEntity<Map<String, String>> createCheckoutSession(@RequestBody CheckoutRequest request) {
-        log.info("Hosted Checkout Session request for plan: {}", request.getPlanId());
+        log.info("Hosted Checkout Session for plan: {}", request.getPlanId());
 
         if (request.getPlanId() == null || request.getPlanId().isBlank()) {
             Map<String, String> error = new HashMap<>();
-            error.put("error", "planId is required (Stripe Price ID)");
+            error.put("error", "planId is required");
             return ResponseEntity.badRequest().body(error);
         }
 
         try {
             Map<String, String> session = stripeService.createHostedCheckoutSession(request);
+
+            if (request.getEmail() != null && !request.getEmail().isBlank()) {
+                salesforceService.upsertContact(
+                        nullToEmpty(request.getFirstName()),
+                        nullToEmpty(request.getLastName()),
+                        request.getEmail());
+            }
+
             return ResponseEntity.ok(session);
+
         } catch (IllegalArgumentException ex) {
             Map<String, String> error = new HashMap<>();
             error.put("error", ex.getMessage());
@@ -163,5 +129,95 @@ public class CheckoutController {
             error.put("error", "Failed to create Checkout Session: " + ex.getMessage());
             return ResponseEntity.status(500).body(error);
         }
+    }
+
+    // POST /api/checkout/cart-session  (Stripe-hosted — multi-event cart)
+    @PostMapping("/checkout/cart-session")
+    public ResponseEntity<Map<String, String>> createCartCheckoutSession(@RequestBody Map<String, Object> request) {
+        log.info("Cart Checkout Session request");
+
+        Object lineItemsObj = request.get("lineItems");
+        if (!(lineItemsObj instanceof List) || ((List<?>) lineItemsObj).isEmpty()) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "lineItems array is required and must not be empty");
+            return ResponseEntity.badRequest().body(error);
+        }
+
+        try {
+            Map<String, String> session = stripeService.createCartCheckoutSession(request);
+
+            String email = strOrEmpty(request.get("email"));
+            String firstName = strOrEmpty(request.get("firstName"));
+            String lastName = strOrEmpty(request.get("lastName"));
+
+            if (!email.isBlank()) {
+                salesforceService.upsertContact(firstName, lastName, email);
+            }
+
+            return ResponseEntity.ok(session);
+
+        } catch (IllegalArgumentException ex) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", ex.getMessage());
+            return ResponseEntity.badRequest().body(error);
+        } catch (Exception ex) {
+            log.error("Failed to create Cart Session", ex);
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Failed to create Cart Session: " + ex.getMessage());
+            return ResponseEntity.status(500).body(error);
+        }
+    }
+
+    // GET /api/checkout/session/{sessionId}
+    // When payment is complete, run full Salesforce order sync (contact was upserted at session start).
+    @GetMapping("/checkout/session/{sessionId}")
+    public ResponseEntity<Map<String, String>> getCheckoutSession(@PathVariable String sessionId) {
+        log.info("Retrieving session: {}", sessionId);
+        try {
+            Map<String, String> result = stripeService.getSessionPaymentIntent(sessionId);
+
+            String status = result.get("status");
+            if ("complete".equals(status)) {
+                String email = result.get("customerEmail");
+                if (email != null && !email.isBlank()) {
+                    String firstName = result.getOrDefault("firstName", "");
+                    String lastName = result.getOrDefault("lastName", "");
+                    String eventTitle = result.getOrDefault("eventDescription", "Event Registration");
+                    String amount = result.getOrDefault("amountTotal", "0");
+                    String metaMember = result.get("isMember");
+                    boolean isMember;
+                    if (metaMember != null) {
+                        isMember = "true".equalsIgnoreCase(metaMember);
+                    } else {
+                        isMember = !email.isBlank() && salesforceService.isMember(email);
+                    }
+
+                    salesforceService.syncOrderToSalesforce(
+                            firstName,
+                            lastName,
+                            email,
+                            eventTitle,
+                            amount,
+                            sessionId,
+                            isMember);
+                }
+            }
+
+            return ResponseEntity.ok(result);
+
+        } catch (Exception ex) {
+            log.error("Failed to retrieve session {}: {}", sessionId, ex.getMessage());
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Could not retrieve session: " + ex.getMessage());
+            return ResponseEntity.status(500).body(error);
+        }
+    }
+
+    private static String nullToEmpty(String s) {
+        return s != null ? s : "";
+    }
+
+    private static String strOrEmpty(Object o) {
+        return o instanceof String ? (String) o : "";
     }
 }

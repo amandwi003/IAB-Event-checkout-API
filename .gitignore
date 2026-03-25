@@ -38,3 +38,9 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+# Local overrides (do not commit secrets)
+application-local.properties
+application-secrets.properties
+src/main/resources/application-local.properties
+src/main/resources/application-secrets.properties
