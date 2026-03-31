@@ -43,7 +43,7 @@ tasks.named('bootJar') {
 }
 
 def developerAppPort = findProperty('developer.app.port') ?: '8080'
-def developerNgrokUrl  = findProperty('developer.ngrok.url') ?: 'https://staphylomatic-slimily-vivien.ngrok-free.dev'
+def developerNgrokUrl  = findProperty('developer.ngrok.url') ?: 'https://iab-event-checkout-api-production.up.railway.app'
 
 tasks.register('tunnel', Exec) {
     group = 'application'

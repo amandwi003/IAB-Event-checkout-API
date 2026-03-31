@@ -6,4 +6,4 @@ tunnels:
   stripe-api:
     proto: http
     addr: 8080
-    hostname: staphylomatic-slimily-vivien.ngrok-free.dev
+    hostname: iab-event-checkout-api-production.up.railway.app
