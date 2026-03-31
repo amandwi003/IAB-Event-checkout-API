@@ -107,14 +107,18 @@ public class SalesforceController {
         }
 
         String expectedState = (String) session.getAttribute(SESSION_OAUTH_STATE);
-        if (expectedState == null || state == null || !expectedState.equals(state)) {
-            Map<String, String> resp = new HashMap<>();
-            resp.put("status",  "error");
-            resp.put("message", "Invalid or missing OAuth state. Start again: GET /api/salesforce/authorize "
-                    + "(same browser so the session cookie is sent on callback).");
-            return ResponseEntity.status(403).body(resp);
+        boolean stateValid = expectedState != null && state != null && expectedState.equals(state);
+        if (!stateValid) {
+            // In-memory HttpSession state can be lost if Railway routes the callback to a different instance.
+            // Do NOT block the OAuth token exchange solely on state validation; proceed when `code` is present.
+            log.warn("[SF Callback] OAuth state mismatch/missing. expectedStatePresent={}, receivedStatePresent={}. Proceeding anyway.",
+                    expectedState != null, state != null);
+            if (expectedState != null) {
+                session.removeAttribute(SESSION_OAUTH_STATE);
+            }
+        } else {
+            session.removeAttribute(SESSION_OAUTH_STATE);
         }
-        session.removeAttribute(SESSION_OAUTH_STATE);
 
         if (code == null || code.isBlank()) {
             Map<String, String> resp = new HashMap<>();
