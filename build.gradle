@@ -18,6 +18,7 @@ repositories {
 
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.apache.httpcomponents.client5:httpclient5'
 
     // Stripe Java SDK
     implementation 'com.stripe:stripe-java:24.3.0'

@@ -5,12 +5,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -51,7 +57,56 @@ public class SalesforceService {
     @Value("${salesforce.demo.mode:false}")
     private boolean demoMode;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    @Value("${salesforce.contact.object:Contact}")
+    private String contactObjectApiName;
+
+    @Value("${salesforce.contact.external.id.field:Email}")
+    private String contactExternalIdField;
+
+    @Value("${salesforce.order.object:Opportunity}")
+    private String orderObjectApiName;
+
+    @Value("${salesforce.order.name.field:Name}")
+    private String orderNameFieldApiName;
+
+    @Value("${salesforce.order.amount.field:Amount}")
+    private String orderAmountFieldApiName;
+
+    @Value("${salesforce.order.description.field:Description}")
+    private String orderDescriptionFieldApiName;
+
+    @Value("${salesforce.order.email.field:}")
+    private String orderEmailFieldApiName;
+
+    @Value("${salesforce.order.first.name.field:}")
+    private String orderFirstNameFieldApiName;
+
+    @Value("${salesforce.order.last.name.field:}")
+    private String orderLastNameFieldApiName;
+
+    @Value("${salesforce.order.member.field:}")
+    private String orderMemberFieldApiName;
+
+    @Value("${salesforce.order.external.id.field:}")
+    private String orderExternalIdFieldApiName;
+
+    @Value("${salesforce.order.default.stage.name:Closed Won}")
+    private String orderDefaultStageName;
+
+    @Value("${salesforce.order.stage.field:StageName}")
+    private String orderStageFieldApiName;
+
+    @Value("${salesforce.order.close.date.field:CloseDate}")
+    private String orderCloseDateFieldApiName;
+
+    @Value("${salesforce.order.lead.source.field:LeadSource}")
+    private String orderLeadSourceFieldApiName;
+
+    private final RestTemplate restTemplate;
+
+    public SalesforceService() {
+        this.restTemplate = new RestTemplate(new HttpComponentsClientHttpRequestFactory());
+    }
 
     @PostConstruct
     public void validateConfig() {
@@ -182,6 +237,131 @@ public class SalesforceService {
         restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
     }
 
+    public Map<String, Object> discoverObjects(String nameContains, boolean includeFields, int limit) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("apiVersion", apiVersion);
+        result.put("instanceUrl", apiBaseUrl());
+
+        if (demoMode) {
+            List<Map<String, Object>> demoObjects = new ArrayList<>();
+            demoObjects.add(demoObject("Contact", "Contact", false));
+            demoObjects.add(demoObject("Opportunity", "Opportunity", false));
+            demoObjects.add(demoObject("Woo_Order__c", "Woo Order", true));
+            result.put("objects", demoObjects);
+            result.put("count", demoObjects.size());
+            return result;
+        }
+
+        String token = getAccessToken();
+        String url = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+        Map<?, ?> body = response.getBody();
+
+        List<Map<String, Object>> objects = new ArrayList<>();
+        String needle = nameContains == null ? "" : nameContains.trim().toLowerCase();
+        int max = limit > 0 ? limit : 200;
+
+        if (body != null && body.get("sobjects") instanceof List<?> sobjects) {
+            for (Object item : sobjects) {
+                if (!(item instanceof Map<?, ?> obj)) continue;
+                String apiName = obj.get("name") != null ? obj.get("name").toString() : "";
+                String label = obj.get("label") != null ? obj.get("label").toString() : "";
+                if (!needle.isBlank()) {
+                    String haystack = (apiName + " " + label).toLowerCase();
+                    if (!haystack.contains(needle)) continue;
+                }
+
+                Map<String, Object> one = new HashMap<>();
+                one.put("name", apiName);
+                one.put("label", label);
+                one.put("custom", asBoolean(obj.get("custom")));
+                one.put("createable", asBoolean(obj.get("createable")));
+                one.put("updateable", asBoolean(obj.get("updateable")));
+                one.put("queryable", asBoolean(obj.get("queryable")));
+
+                if (includeFields && !apiName.isBlank()) {
+                    one.put("fields", describeObjectFields(apiName, token));
+                }
+
+                objects.add(one);
+            }
+        }
+
+        objects.sort(Comparator
+                .comparing((Map<String, Object> o) -> !(Boolean.TRUE.equals(o.get("custom"))))
+                .thenComparing(o -> o.get("name") != null ? o.get("name").toString() : ""));
+
+        if (objects.size() > max) {
+            objects = new ArrayList<>(objects.subList(0, max));
+        }
+
+        result.put("objects", objects);
+        result.put("count", objects.size());
+        return result;
+    }
+
+    public Map<String, Object> suggestMappings(String hint) {
+        Map<String, Object> discovered = discoverObjects(hint, true, 300);
+        Map<String, Object> result = new HashMap<>();
+        result.put("apiVersion", apiVersion);
+        result.put("instanceUrl", apiBaseUrl());
+
+        Object objectsObj = discovered.get("objects");
+        if (!(objectsObj instanceof List<?> objects)) {
+            result.put("status", "no_objects");
+            result.put("message", "No objects discovered.");
+            return result;
+        }
+
+        Map<String, Object> contactObj = pickBestContactObject(objects);
+        Map<String, Object> orderObj = pickBestOrderObject(objects);
+
+        Map<String, Object> mapping = new HashMap<>();
+        if (contactObj != null) {
+            String contactObjectName = str(contactObj.get("name"));
+            mapping.put("salesforce.contact.object", contactObjectName);
+            mapping.put("salesforce.contact.external.id.field",
+                    pickBestExternalIdField(contactObj, List.of("Email", "Email__c", "email", "email__c"), "Email"));
+        } else {
+            mapping.put("salesforce.contact.object", "Contact");
+            mapping.put("salesforce.contact.external.id.field", "Email");
+        }
+
+        if (orderObj != null) {
+            String orderObjectName = str(orderObj.get("name"));
+            mapping.put("salesforce.order.object", orderObjectName);
+            mapping.put("salesforce.order.name.field", pickField(orderObj, List.of("Name", "Order_Name__c"), "Name"));
+            mapping.put("salesforce.order.amount.field", pickField(orderObj, List.of("Amount", "Amount__c", "Total__c"), "Amount"));
+            mapping.put("salesforce.order.description.field",
+                    pickField(orderObj, List.of("Description", "Description__c", "Notes__c"), "Description"));
+            mapping.put("salesforce.order.email.field", pickField(orderObj, List.of("Email__c", "Email", "Customer_Email__c"), ""));
+            mapping.put("salesforce.order.first.name.field", pickField(orderObj, List.of("First_Name__c", "FirstName__c"), ""));
+            mapping.put("salesforce.order.last.name.field", pickField(orderObj, List.of("Last_Name__c", "LastName__c"), ""));
+            mapping.put("salesforce.order.member.field", pickField(orderObj, List.of("IsMember__c", "Is_Member__c"), ""));
+            mapping.put("salesforce.order.external.id.field",
+                    pickBestExternalIdField(orderObj, List.of("Stripe_Session_Id__c", "Woo_Order_Id__c", "Order_Id__c"), ""));
+            mapping.put("salesforce.order.stage.field", pickField(orderObj, List.of("StageName", "Stage__c"), ""));
+            mapping.put("salesforce.order.close.date.field", pickField(orderObj, List.of("CloseDate", "Close_Date__c"), ""));
+            mapping.put("salesforce.order.lead.source.field", pickField(orderObj, List.of("LeadSource", "Lead_Source__c"), ""));
+        } else {
+            mapping.put("salesforce.order.object", "Opportunity");
+            mapping.put("salesforce.order.name.field", "Name");
+            mapping.put("salesforce.order.amount.field", "Amount");
+            mapping.put("salesforce.order.description.field", "Description");
+            mapping.put("salesforce.order.external.id.field", "");
+        }
+
+        result.put("status", "ok");
+        result.put("suggestedMapping", mapping);
+        result.put("contactCandidate", contactObj);
+        result.put("orderCandidate", orderObj);
+        return result;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 5. UPSERT CONTACT
     // ─────────────────────────────────────────────────────────────────────────
@@ -201,7 +381,9 @@ public class SalesforceService {
         }
 
         String token = getAccessToken();
-        String url   = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/Contact/Email/" + email;
+        String safeEmail = encodePathSegment(email);
+        String url = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/"
+                + contactObjectApiName + "/" + contactExternalIdField + "/" + safeEmail;
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -221,8 +403,9 @@ public class SalesforceService {
             return body != null && body.containsKey("id") ? (String) body.get("id") : email;
 
         } catch (Exception e) {
-            log.error("[SF] Contact upsert failed: {}", e.getMessage());
-            throw new RuntimeException("Salesforce contact upsert failed: " + e.getMessage());
+            log.warn("[SF] Contact upsert failed on configured object {}. Will try standard Contact fallback. Cause: {}",
+                    contactObjectApiName, e.getMessage());
+            return tryContactFallback(request, safeEmail, email);
         }
     }
 
@@ -231,8 +414,9 @@ public class SalesforceService {
     // ─────────────────────────────────────────────────────────────────────────
 
     public String createOpportunity(String contactId, String eventTitle, String amount,
-                                    String stripeSessionId, boolean isMember) {
-        log.info("[SF] Creating opportunity for contact: {}, event: {}", contactId, eventTitle);
+                                    String stripeSessionId, boolean isMember,
+                                    String firstName, String lastName, String email) {
+        log.info("[SF] Creating order object {} for contact: {}, event: {}", orderObjectApiName, contactId, eventTitle);
 
         if (demoMode) {
             String fakeId = fakeSfId("006");
@@ -247,35 +431,45 @@ public class SalesforceService {
         }
 
         String token = getAccessToken();
-        String url   = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/Opportunity/";
+        String url = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/" + orderObjectApiName + "/";
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(token);
 
         Map<String, Object> oppBody = new HashMap<>();
-        oppBody.put("Name",        "Event Registration - " + eventTitle);
-        oppBody.put("StageName",   "Closed Won");
-        oppBody.put("CloseDate",   java.time.LocalDate.now().toString());
-        oppBody.put("Amount",      amount);
-        oppBody.put("Description", "Stripe Session: " + stripeSessionId);
-        oppBody.put("LeadSource",  "Web");
-        // NOTE: update field names once field mapping doc arrives from SF admin
-        // oppBody.put("Contact__c",  contactId);
-        // oppBody.put("IsMember__c", isMember);
+        putIfConfigured(oppBody, orderNameFieldApiName, "Event Registration - " + eventTitle);
+        putIfConfigured(oppBody, orderAmountFieldApiName, amount);
+        putIfConfigured(oppBody, orderDescriptionFieldApiName, "Stripe Session: " + stripeSessionId);
+        putIfConfigured(oppBody, orderEmailFieldApiName, email);
+        putIfConfigured(oppBody, orderFirstNameFieldApiName, firstName);
+        putIfConfigured(oppBody, orderLastNameFieldApiName, lastName);
+        putIfConfigured(oppBody, orderMemberFieldApiName, isMember);
+        putIfConfigured(oppBody, orderStageFieldApiName, orderDefaultStageName);
+        putIfConfigured(oppBody, orderCloseDateFieldApiName, java.time.LocalDate.now().toString());
+        putIfConfigured(oppBody, orderLeadSourceFieldApiName, "Web");
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(oppBody, headers);
 
         try {
-            ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+            ResponseEntity<Map> response;
+            if (isBlank(orderExternalIdFieldApiName) || isBlank(stripeSessionId)) {
+                response = restTemplate.postForEntity(url, request, Map.class);
+            } else {
+                String upsertUrl = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/"
+                        + orderObjectApiName + "/" + orderExternalIdFieldApiName + "/"
+                        + encodePathSegment(stripeSessionId);
+                response = restTemplate.exchange(upsertUrl, HttpMethod.PATCH, request, Map.class);
+            }
             Map<?, ?> body = response.getBody();
             String oppId = body != null ? (String) body.get("id") : null;
             log.info("[SF] Opportunity created: {}", oppId);
             return oppId;
 
         } catch (Exception e) {
-            log.error("[SF] Opportunity creation failed: {}", e.getMessage());
-            throw new RuntimeException("Salesforce opportunity creation failed: " + e.getMessage());
+            log.warn("[SF] Order create/upsert failed on configured object {}. Will try Opportunity fallback. Cause: {}",
+                    orderObjectApiName, e.getMessage());
+            return tryOpportunityFallback(request);
         }
     }
 
@@ -333,7 +527,8 @@ public class SalesforceService {
                                       String stripeSessionId, boolean isMember) {
         try {
             String contactId = upsertContact(firstName, lastName, email);
-            String oppId     = createOpportunity(contactId, eventTitle, amount, stripeSessionId, isMember);
+            String oppId = createOpportunity(contactId, eventTitle, amount, stripeSessionId, isMember,
+                    firstName, lastName, email);
 
             if (demoMode) {
                 log.info("[SF DEMO] ✅ Full order sync complete — Contact: {} | Opportunity: {} | Member: {}",
@@ -424,5 +619,184 @@ public class SalesforceService {
         this.refreshToken         = null;
         this.tokenExpiresAtMillis = 0;
         this.effectiveInstanceUrl = null;
+    }
+
+    private static String encodePathSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
+
+    private static void putIfConfigured(Map<String, Object> body, String fieldApiName, Object value) {
+        if (!isBlank(fieldApiName)) {
+            body.put(fieldApiName, value);
+        }
+    }
+
+    private List<Map<String, Object>> describeObjectFields(String objectApiName, String token) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        String url = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/"
+                + encodePathSegment(objectApiName) + "/describe";
+        try {
+            ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+            Map<?, ?> body = response.getBody();
+            List<Map<String, Object>> fields = new ArrayList<>();
+            if (body != null && body.get("fields") instanceof List<?> fieldList) {
+                for (Object f : fieldList) {
+                    if (!(f instanceof Map<?, ?> field)) continue;
+                    Map<String, Object> one = new HashMap<>();
+                    one.put("name", field.get("name"));
+                    one.put("label", field.get("label"));
+                    one.put("type", field.get("type"));
+                    one.put("externalId", asBoolean(field.get("externalId")));
+                    one.put("createable", asBoolean(field.get("createable")));
+                    one.put("updateable", asBoolean(field.get("updateable")));
+                    fields.add(one);
+                }
+            }
+            return fields;
+        } catch (Exception e) {
+            log.warn("[SF] Failed to describe object {}: {}", objectApiName, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private static boolean asBoolean(Object value) {
+        return value instanceof Boolean b && b;
+    }
+
+    private static Map<String, Object> demoObject(String name, String label, boolean custom) {
+        Map<String, Object> object = new HashMap<>();
+        object.put("name", name);
+        object.put("label", label);
+        object.put("custom", custom);
+        object.put("createable", true);
+        object.put("updateable", true);
+        object.put("queryable", true);
+        return object;
+    }
+
+    private Map<String, Object> pickBestContactObject(List<?> objects) {
+        Map<String, Object> standard = null;
+        Map<String, Object> custom = null;
+        for (Object item : objects) {
+            if (!(item instanceof Map<?, ?> obj)) continue;
+            String name = str(obj.get("name")).toLowerCase();
+            String label = str(obj.get("label")).toLowerCase();
+            if (name.equals("contact")) {
+                standard = toStringObjectMap(obj);
+            }
+            if (name.contains("contact") || name.contains("customer") || label.contains("contact") || label.contains("customer")) {
+                if (Boolean.TRUE.equals(obj.get("custom")) && custom == null) {
+                    custom = toStringObjectMap(obj);
+                }
+            }
+        }
+        return custom != null ? custom : standard;
+    }
+
+    private Map<String, Object> pickBestOrderObject(List<?> objects) {
+        Map<String, Object> opportunity = null;
+        Map<String, Object> custom = null;
+        for (Object item : objects) {
+            if (!(item instanceof Map<?, ?> obj)) continue;
+            String name = str(obj.get("name")).toLowerCase();
+            String label = str(obj.get("label")).toLowerCase();
+            if (name.equals("opportunity")) {
+                opportunity = toStringObjectMap(obj);
+            }
+            boolean looksOrder = name.contains("order") || name.contains("woo") || name.contains("checkout")
+                    || label.contains("order") || label.contains("woo") || label.contains("checkout");
+            if (looksOrder && Boolean.TRUE.equals(obj.get("custom")) && custom == null) {
+                custom = toStringObjectMap(obj);
+            }
+        }
+        return custom != null ? custom : opportunity;
+    }
+
+    private String pickBestExternalIdField(Map<String, Object> objectDef, List<String> preferred, String fallback) {
+        String preferredHit = pickField(objectDef, preferred, "");
+        if (!preferredHit.isBlank()) return preferredHit;
+        Object fieldsObj = objectDef.get("fields");
+        if (fieldsObj instanceof List<?> fields) {
+            for (Object fieldObj : fields) {
+                if (!(fieldObj instanceof Map<?, ?> field)) continue;
+                boolean ext = Boolean.TRUE.equals(field.get("externalId"));
+                if (ext && asBoolean(field.get("createable")) && asBoolean(field.get("updateable"))) {
+                    return str(field.get("name"));
+                }
+            }
+        }
+        return fallback;
+    }
+
+    private String pickField(Map<String, Object> objectDef, List<String> preferredApiNames, String fallback) {
+        Object fieldsObj = objectDef.get("fields");
+        if (!(fieldsObj instanceof List<?> fields)) return fallback;
+        for (String preferred : preferredApiNames) {
+            for (Object fieldObj : fields) {
+                if (!(fieldObj instanceof Map<?, ?> field)) continue;
+                String name = str(field.get("name"));
+                if (name.equalsIgnoreCase(preferred)) {
+                    return name;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    private static String str(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private static Map<String, Object> toStringObjectMap(Map<?, ?> input) {
+        Map<String, Object> out = new HashMap<>();
+        for (Map.Entry<?, ?> entry : input.entrySet()) {
+            out.put(str(entry.getKey()), entry.getValue());
+        }
+        return out;
+    }
+
+    private String tryContactFallback(HttpEntity<Map<String, Object>> request, String safeEmail, String defaultContactId) {
+        if ("Contact".equalsIgnoreCase(contactObjectApiName) && "Email".equalsIgnoreCase(contactExternalIdField)) {
+            log.warn("[SF] Contact fallback skipped because configured object is already standard Contact/Email.");
+            return defaultContactId;
+        }
+        try {
+            String fallbackUrl = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/Contact/Email/" + safeEmail;
+            ResponseEntity<Map> fallback = restTemplate.exchange(fallbackUrl, HttpMethod.PATCH, request, Map.class);
+            Map<?, ?> body = fallback.getBody();
+            String contactId = body != null && body.containsKey("id") ? (String) body.get("id") : defaultContactId;
+            log.info("[SF] Contact fallback upsert succeeded on Contact/Email");
+            return contactId;
+        } catch (Exception fallbackEx) {
+            log.warn("[SF] Contact fallback also failed. Continuing without Salesforce contact id: {}",
+                    fallbackEx.getMessage());
+            return defaultContactId;
+        }
+    }
+
+    private String tryOpportunityFallback(HttpEntity<Map<String, Object>> request) {
+        if ("Opportunity".equalsIgnoreCase(orderObjectApiName)) {
+            log.warn("[SF] Opportunity fallback skipped because configured order object is already Opportunity.");
+            return null;
+        }
+        try {
+            String fallbackUrl = apiBaseUrl() + "/services/data/" + apiVersion + "/sobjects/Opportunity/";
+            ResponseEntity<Map> fallback = restTemplate.postForEntity(fallbackUrl, request, Map.class);
+            Map<?, ?> body = fallback.getBody();
+            String oppId = body != null ? (String) body.get("id") : null;
+            log.info("[SF] Opportunity fallback create succeeded: {}", oppId);
+            return oppId;
+        } catch (Exception fallbackEx) {
+            log.warn("[SF] Opportunity fallback failed. Order sync will be skipped gracefully. Cause: {}",
+                    fallbackEx.getMessage());
+            return null;
+        }
     }
 }

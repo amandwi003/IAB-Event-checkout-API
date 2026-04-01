@@ -111,10 +111,15 @@ public class CheckoutController {
             Map<String, String> session = stripeService.createHostedCheckoutSession(request);
 
             if (request.getEmail() != null && !request.getEmail().isBlank()) {
-                salesforceService.upsertContact(
-                        nullToEmpty(request.getFirstName()),
-                        nullToEmpty(request.getLastName()),
-                        request.getEmail());
+                try {
+                    salesforceService.upsertContact(
+                            nullToEmpty(request.getFirstName()),
+                            nullToEmpty(request.getLastName()),
+                            request.getEmail());
+                } catch (Exception sfEx) {
+                    log.warn("Salesforce contact upsert failed for {}. Continuing checkout session creation: {}",
+                            request.getEmail(), sfEx.getMessage());
+                }
             }
 
             return ResponseEntity.ok(session);
@@ -151,7 +156,12 @@ public class CheckoutController {
             String lastName = strOrEmpty(request.get("lastName"));
 
             if (!email.isBlank()) {
-                salesforceService.upsertContact(firstName, lastName, email);
+                try {
+                    salesforceService.upsertContact(firstName, lastName, email);
+                } catch (Exception sfEx) {
+                    log.warn("Salesforce contact upsert failed for {}. Continuing cart session creation: {}",
+                            email, sfEx.getMessage());
+                }
             }
 
             return ResponseEntity.ok(session);

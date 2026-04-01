@@ -164,6 +164,56 @@ public class SalesforceController {
         return ResponseEntity.ok(resp);
     }
 
+    @GetMapping("/discover-objects")
+    public ResponseEntity<Map<String, Object>> discoverObjects(
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(value = "includeFields", defaultValue = "false") boolean includeFields,
+            @RequestParam(value = "limit", defaultValue = "100") int limit) {
+        if (!salesforceService.hasOAuthSession()) {
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("status", "needs_authorization");
+            resp.put("message", "OAuth not completed. Open GET /api/salesforce/authorize and approve access first.");
+            return ResponseEntity.status(400).body(resp);
+        }
+
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        try {
+            Map<String, Object> result = salesforceService.discoverObjects(query, includeFields, safeLimit);
+            result.put("status", "ok");
+            result.put("query", query != null ? query : "");
+            result.put("includeFields", includeFields);
+            result.put("limit", safeLimit);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("[SF] discover-objects failed: {}", e.getMessage());
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("status", "error");
+            resp.put("message", "Failed to discover Salesforce objects: " + e.getMessage());
+            return ResponseEntity.status(500).body(resp);
+        }
+    }
+
+    @GetMapping("/suggest-mapping")
+    public ResponseEntity<Map<String, Object>> suggestMapping(
+            @RequestParam(value = "q", required = false) String query) {
+        if (!salesforceService.hasOAuthSession()) {
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("status", "needs_authorization");
+            resp.put("message", "OAuth not completed. Open GET /api/salesforce/authorize and approve access first.");
+            return ResponseEntity.status(400).body(resp);
+        }
+        try {
+            Map<String, Object> result = salesforceService.suggestMappings(query);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("[SF] suggest-mapping failed: {}", e.getMessage());
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("status", "error");
+            resp.put("message", "Failed to suggest mapping: " + e.getMessage());
+            return ResponseEntity.status(500).body(resp);
+        }
+    }
+
     @PostMapping("/sync-order")
     public ResponseEntity<Map<String, String>> syncOrder(@RequestBody Map<String, Object> body) {
         String firstName  = (String) body.getOrDefault("firstName",   "");
