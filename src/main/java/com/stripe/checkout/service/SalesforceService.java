@@ -525,6 +525,10 @@ public class SalesforceService {
     public void syncOrderToSalesforce(String firstName, String lastName, String email,
                                       String eventTitle, String amount,
                                       String stripeSessionId, boolean isMember) {
+        if (!demoMode && !hasOAuthSession()) {
+            log.info("[SF] Order sync skipped for {} — OAuth not completed", email);
+            return;
+        }
         try {
             String contactId = upsertContact(firstName, lastName, email);
             String oppId = createOpportunity(contactId, eventTitle, amount, stripeSessionId, isMember,
@@ -534,7 +538,11 @@ public class SalesforceService {
                 log.info("[SF DEMO] ✅ Full order sync complete — Contact: {} | Opportunity: {} | Member: {}",
                         contactId, oppId, isMember);
             } else {
-                log.info("[SF] Order synced to Salesforce for {}", email);
+                if (oppId != null) {
+                    log.info("[SF] Order synced to Salesforce for {} (record id: {})", email, oppId);
+                } else {
+                    log.info("[SF] Order sync finished for {} with no created record id", email);
+                }
             }
 
         } catch (Exception e) {
