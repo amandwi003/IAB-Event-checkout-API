@@ -1,5 +1,6 @@
 package com.stripe.checkout.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +14,8 @@ import org.springframework.web.client.RestTemplate;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -102,7 +105,20 @@ public class SalesforceService {
     @Value("${salesforce.order.lead.source.field:LeadSource}")
     private String orderLeadSourceFieldApiName;
 
+    @Value("${salesforce.token.store.enabled:true}")
+    private boolean tokenStoreEnabled;
+
+    @Value("${salesforce.token.store.path:.salesforce-token-store.json}")
+    private String tokenStorePath;
+
+    @Value("${salesforce.bootstrap.refresh.token:}")
+    private String bootstrapRefreshToken;
+
+    @Value("${salesforce.bootstrap.instance.url:}")
+    private String bootstrapInstanceUrl;
+
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SalesforceService() {
         this.restTemplate = new RestTemplate(new HttpComponentsClientHttpRequestFactory());
@@ -123,6 +139,7 @@ public class SalesforceService {
                 throw new IllegalStateException(
                         "Missing Salesforce client secret. Set environment variable SALESFORCE_CLIENT_SECRET (or salesforce.client.secret).");
             }
+            loadTokensFromStore();
         }
     }
 
@@ -222,6 +239,19 @@ public class SalesforceService {
         throw new IllegalStateException(
                 "Salesforce is not connected. Open GET /api/salesforce/authorize in a browser, "
                         + "sign in, and approve the app.");
+    }
+
+    public Map<String, String> exportTokenInfo(boolean includeSecrets) {
+        Map<String, String> out = new HashMap<>();
+        out.put("hasOAuthSession", String.valueOf(hasOAuthSession()));
+        out.put("apiBaseUrl", apiBaseUrl());
+        out.put("hasRefreshToken", String.valueOf(refreshToken != null && !refreshToken.isBlank()));
+        out.put("hasAccessToken", String.valueOf(accessToken != null && !accessToken.isBlank()));
+        if (includeSecrets) {
+            out.put("refreshToken", refreshToken != null ? refreshToken : "");
+            out.put("accessToken", accessToken != null ? accessToken : "");
+        }
+        return out;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -580,6 +610,7 @@ public class SalesforceService {
                 : System.currentTimeMillis() + DEFAULT_ACCESS_TOKEN_TTL_MS;
 
         log.info("[SF] Token applied; API base: {}", apiBaseUrl());
+        persistTokens();
     }
 
     private static long parseExpiresInMs(Object expiresIn) {
@@ -627,10 +658,75 @@ public class SalesforceService {
         this.refreshToken         = null;
         this.tokenExpiresAtMillis = 0;
         this.effectiveInstanceUrl = null;
+        persistTokens();
+    }
+
+    private synchronized void loadTokensFromStore() {
+        // 1) Env bootstrap (best for Railway persistence across deploys)
+        if (bootstrapRefreshToken != null && !bootstrapRefreshToken.isBlank()) {
+            this.refreshToken = bootstrapRefreshToken.trim();
+            if (bootstrapInstanceUrl != null && !bootstrapInstanceUrl.isBlank()) {
+                this.effectiveInstanceUrl = stripTrailingSlash(bootstrapInstanceUrl.trim());
+            }
+            log.info("[SF] Loaded bootstrap refresh token from config");
+        }
+
+        // 2) File store fallback
+        if (this.refreshToken == null || this.refreshToken.isBlank()) {
+            readTokensFromFile();
+        }
+
+        // 3) Prime access token on startup if refresh token is available
+        if (this.refreshToken != null && !this.refreshToken.isBlank()) {
+            try {
+                refreshAccessToken();
+            } catch (Exception e) {
+                log.warn("[SF] Failed to refresh token on startup: {}", e.getMessage());
+            }
+        }
+    }
+
+    private void readTokensFromFile() {
+        if (!tokenStoreEnabled || tokenStorePath == null || tokenStorePath.isBlank()) return;
+        try {
+            Path path = Path.of(tokenStorePath);
+            if (!Files.exists(path)) return;
+            Map<?, ?> body = objectMapper.readValue(Files.readString(path), Map.class);
+            Object rt = body.get("refreshToken");
+            if (rt instanceof String s && !s.isBlank()) {
+                this.refreshToken = s;
+            }
+            Object iu = body.get("instanceUrl");
+            if (iu instanceof String s && !s.isBlank()) {
+                this.effectiveInstanceUrl = stripTrailingSlash(s);
+            }
+            log.info("[SF] Loaded tokens from local token store");
+        } catch (Exception e) {
+            log.warn("[SF] Could not read token store {}: {}", tokenStorePath, e.getMessage());
+        }
+    }
+
+    private void persistTokens() {
+        if (!tokenStoreEnabled || tokenStorePath == null || tokenStorePath.isBlank()) return;
+        try {
+            Map<String, Object> state = new HashMap<>();
+            state.put("accessToken", accessToken);
+            state.put("refreshToken", refreshToken);
+            state.put("tokenExpiresAtMillis", tokenExpiresAtMillis);
+            state.put("instanceUrl", effectiveInstanceUrl);
+            Path path = Path.of(tokenStorePath);
+            Files.writeString(path, objectMapper.writeValueAsString(state));
+        } catch (Exception e) {
+            log.warn("[SF] Could not persist token store {}: {}", tokenStorePath, e.getMessage());
+        }
     }
 
     private static String encodePathSegment(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String stripTrailingSlash(String url) {
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
     private static boolean isBlank(String s) {

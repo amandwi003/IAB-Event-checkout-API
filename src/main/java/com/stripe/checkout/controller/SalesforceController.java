@@ -214,6 +214,13 @@ public class SalesforceController {
         }
     }
 
+    @GetMapping("/token-info")
+    public ResponseEntity<Map<String, String>> tokenInfo(
+            @RequestParam(value = "includeSecrets", defaultValue = "false") boolean includeSecrets) {
+        Map<String, String> info = salesforceService.exportTokenInfo(includeSecrets);
+        return ResponseEntity.ok(info);
+    }
+
     @PostMapping("/sync-order")
     public ResponseEntity<Map<String, String>> syncOrder(@RequestBody Map<String, Object> body) {
         String firstName  = (String) body.getOrDefault("firstName",   "");
