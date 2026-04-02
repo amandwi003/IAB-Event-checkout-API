@@ -11,8 +11,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriUtils;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -434,7 +434,10 @@ public class SalesforceService {
         Map<String, Object> contactBody = new HashMap<>();
         contactBody.put("FirstName", firstName);
         contactBody.put("LastName",  lastName);
-        contactBody.put("Email",     email);
+        // Upsert URL already identifies the record by Email; Salesforce rejects Email in the PATCH body for this pattern.
+        if (!"Email".equalsIgnoreCase(contactExternalIdField)) {
+            contactBody.put("Email", email);
+        }
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(contactBody, headers);
 
@@ -734,7 +737,7 @@ public class SalesforceService {
     }
 
     private static String encodePathSegment(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+        return UriUtils.encodePathSegment(value, StandardCharsets.UTF_8);
     }
 
     private static String stripTrailingSlash(String url) {
