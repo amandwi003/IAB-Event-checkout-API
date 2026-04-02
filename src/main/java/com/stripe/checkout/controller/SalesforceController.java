@@ -265,9 +265,12 @@ public class SalesforceController {
 
         if (!salesforceService.hasOAuthSession()) {
             resp.put("status",  "needs_authorization");
-            resp.put("message", "OAuth not completed. Open GET /api/salesforce/authorize in a browser on this host, "
-                    + "approve the Connected App, then try again. Tokens are stored in memory until the app restarts "
-                    + "(use refresh_token in Connected App scopes for renewal).");
+            resp.put("bootstrap_refresh_token_env_set", String.valueOf(salesforceService.isBootstrapRefreshTokenConfigured()));
+            resp.put("bootstrap_instance_url_env_set", String.valueOf(salesforceService.isBootstrapInstanceUrlConfigured()));
+            resp.put("message", "No Salesforce OAuth session in this process. Either: (1) Set Railway secrets "
+                    + "SALESFORCE_BOOTSTRAP_REFRESH_TOKEN and SALESFORCE_BOOTSTRAP_INSTANCE_URL (sandbox instance URL), "
+                    + "then redeploy; or (2) Open GET /api/salesforce/authorize in a browser, approve the Connected App — "
+                    + "note restarts clear in-memory tokens unless bootstrap env is set.");
             return ResponseEntity.ok(resp);
         }
 

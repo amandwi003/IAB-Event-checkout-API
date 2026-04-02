@@ -241,6 +241,18 @@ public class SalesforceService {
                         + "sign in, and approve the app.");
     }
 
+    /**
+     * Whether {@code salesforce.bootstrap.refresh.token} / {@code SALESFORCE_BOOTSTRAP_REFRESH_TOKEN} was set.
+     * Does not expose the token — useful to verify Railway env before redeploy.
+     */
+    public boolean isBootstrapRefreshTokenConfigured() {
+        return bootstrapRefreshToken != null && !bootstrapRefreshToken.isBlank();
+    }
+
+    public boolean isBootstrapInstanceUrlConfigured() {
+        return bootstrapInstanceUrl != null && !bootstrapInstanceUrl.isBlank();
+    }
+
     public Map<String, String> exportTokenInfo(boolean includeSecrets) {
         Map<String, String> out = new HashMap<>();
         out.put("hasOAuthSession", String.valueOf(hasOAuthSession()));
