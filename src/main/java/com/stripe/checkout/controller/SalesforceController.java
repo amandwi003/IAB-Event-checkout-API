@@ -121,9 +121,19 @@ public class SalesforceController {
         }
 
         if (code == null || code.isBlank()) {
+            // Opening /callback in the browser (no ?code=) is not an error when tokens already exist (e.g. bootstrap env).
+            if (salesforceService.hasOAuthSession()) {
+                Map<String, String> resp = new HashMap<>();
+                resp.put("status",  "already_connected");
+                resp.put("message", "No ?code= on this request — expected if you opened /callback directly. "
+                        + "Salesforce only redirects here with ?code=... after you approve GET /api/salesforce/authorize. "
+                        + "This server already has a valid session; use GET /api/salesforce/health.");
+                return ResponseEntity.ok(resp);
+            }
             Map<String, String> resp = new HashMap<>();
             resp.put("status",  "error");
-            resp.put("message", "No authorisation code received from Salesforce");
+            resp.put("message", "No authorisation code from Salesforce. Start with GET /api/salesforce/authorize — "
+                    + "do not open /callback alone; Salesforce appends ?code=... only after approval.");
             return ResponseEntity.status(400).body(resp);
         }
 
